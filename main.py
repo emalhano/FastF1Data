@@ -1,163 +1,302 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Sun Nov  7 22:14:10 2021
-
-@author: eduardob
-"""
-
-# Importing
 import fastf1 as ff1
-import fastf1.plotting
-from fastf1 import plotting
 from matplotlib import pyplot as plt
-from matplotlib.pyplot import figure
 import numpy as np
 import pandas as pd
-#from IPython import get_ipython
+import os
+import fastf1.plotting
 
-# Setup plotting
-#plotting.setup_mpl()
-#get_ipython().run_line_magic('matplotlib', 'qt')
-#%matplotlib inline
 
-bSelectLaps = False
-
-# Enable the cache
-ff1.Cache.enable_cache('cache')
+fastf1.plotting.setup_mpl(misc_mpl_mods=False)
 
 # Get rid of some pandas warnings that are not relevant for us at the moment
 pd.options.mode.chained_assignment = None
 
-# Load the session data
-race = ff1.get_session(2023, 'Miami', 'Qualifying')
+def get_track_insights(track_name):
 
-# Get the laps
-race.load()
+    # Load the session data
+    session = ff1.get_session(2022, track_name, 'Qualifying')
+    session.load(weather=True)
 
-drivers = ['SAI', 'PER']#, 'PER', 'VER', 'NOR', 'RUS','ALO','HAM', 'VET','OCO']#, 'PER', 'HAM', 'RUS', 'NOR', 'OCO', 'BOT', 'TSU']
-colors = {'VER': 'b',        'PER': 'b',
-          'HAM': 'black',    'RUS': 'black',
-          'LEC': 'r',        'SAI': 'r',
-          'NOR': 'orange',   'RIC': 'orange',
-          'ALO': 'magenta',  'OCO': 'magenta',
-          'GAS': 'darkblue', 'TSU': 'darkblue',
-          'VET': 'green',    'STR': 'green', 'HUL': 'green',
-          'BOT': 'gray',     'ZHO': 'gray',
-          'ALB': 'darkblue', 'LAT': 'darkblue',
-          'MSC': 'gray',     'MAG': 'gray'}
+    is_dry = not session.weather_data["Rainfall"].any()
 
-linestyles = {'VER': 'solid', 'PER': 'dashed',
-              'HAM': 'solid', 'RUS': 'dashed',
-              'LEC': 'solid', 'SAI': 'dashed',
-              'NOR': 'solid', 'PIA': 'dashed',
-              'OCO': 'solid', 'GAS': 'dashed',
-              'TSU': 'solid', 'DEV': 'dashed',
-              'ALO': 'solid', 'STR': 'dashed',
-              'BOT': 'solid', 'ZHO': 'dashed',
-              'ALB': 'solid', 'SAR': 'dashed',
-              'MAG': 'solid', 'HUL': 'dashed'}
-
-# Get laps of the drivers (HAM and VER)
-laps_list = dict()
-fastest = dict()
-telemetry = dict()
-for driver in drivers:
-    laps_list[driver] = race.laps.pick_driver(driver)
-    if not bSelectLaps:
-        fastest[driver] = laps_list[driver].pick_fastest()
+    get_metrics = False
+    if is_dry:
+        get_metrics = True
     else:
-        if False: #driver == 'ALOsss':
-            LapTimeList = laps_list[driver]['LapTime'].astype('timedelta64[ms]').astype(np.float64) / 1000
-            LapNumberList = laps_list[driver]['LapNumber']
-            LapTable = pd.DataFrame({'LapNumber': LapNumberList, 'LapTimeList': LapTimeList})
-            print(LapTable)
-            lapnum = input('Select lap number for ' + driver)
-            fastest[driver] = laps_list[driver][laps_list[driver]['LapNumber'] == int(lapnum)]
-            telemetry[driver] = fastest[driver].get_car_data().add_distance()
-            #fastest[driver] = laps_list[driver].iloc[laps_list[driver].pick_fastest()
+        # Load the session data
+        session = ff1.get_session(2022, track_name, 'FP2')
+        session.load(weather=True)
+
+        is_dry = not session.weather_data["Rainfall"].any()
+
+        if is_dry:
+            get_metrics = True
+
+
+    if get_metrics:
+
+        # Get fastest lap
+        fastest_lap = session.laps.pick_fastest()
+        lap_time = fastest_lap["LapTime"] / np.timedelta64(1, 's')
+
+        lap_data = fastest_lap.get_telemetry()
+        lap_data["Time"] = lap_data["Time"] / np.timedelta64(1, 's')
+        lap_data["Speed"] = 3.6*np.gradient(lap_data["Distance"], lap_data["Time"])
+        lap_data["gLong"] = np.gradient(np.array(lap_data["Speed"]), np.array(lap_data["Time"]))/3.6
+        lap_data["is_PLS"] = lap_data["Throttle"] > 98
+        lap_data["is_GLS"] = lap_data["Throttle"] < 98
+        lap_data["gLong_brake"] = lap_data["gLong"]*(lap_data["gLong"] < 0)
+
+        time_GLS = np.trapz(np.array(lap_data["is_GLS"].astype(np.float64)), x=np.array(lap_data['Time'])) / lap_time
+        time_PLS = np.trapz(np.array(lap_data["is_PLS"].astype(np.float64)), x=np.array(lap_data['Time'])) / lap_time
+        PBrake   = np.trapz(-np.array(lap_data["gLong_brake"]*lap_data["Speed"]/3.6), x=np.array(lap_data['Time']))*800/1e3 / lap_time
+
+        return time_GLS, time_PLS, PBrake
+
+    return 0., 0., 0.
+
+
+
+
+def get_season_insights():
+
+    tracks = ["Bahrain",
+              "Jeddah",
+              "Melbourne",
+              "Imola",
+              "Miami",
+              "Barcelona",
+              "Monaco",
+              "Baku",
+              "Montreal",
+              "Silverstone",
+              "Austria",
+              "France",
+              "Hungary",
+              "Spa",
+              "Zandvoort",
+              "Monza",
+              "Singapore",
+              "Suzuka",
+              "Austin",
+              "Mexico",
+              "Interlagos",
+              "Abu Dhabi"]
+
+    metrics = {"track": [], "time_GLS": [], "time_PLS": [], "PBrake": []}
+    for track in tracks:
+        time_GLS, time_PLS, PBrake = get_track_insights(track)
+        metrics["track"].append(track)
+        metrics["time_GLS"].append(time_GLS)
+        metrics["time_PLS"].append(time_PLS)
+        metrics["PBrake"].append(PBrake)
+
+    season_metrics = pd.DataFrame(metrics)
+
+    if not os.path.exists("Results"):
+        os.mkdir("Results")
+    season_metrics.to_csv("Results/season_metrics.csv")
+
+
+
+
+def plot_season_metrics():
+
+    try:
+        season_metrics = pd.read_csv("Results/season_metrics.csv")
+    except FileNotFoundError as e:
+        print("No file for season metrics found. Please run get_season_insights() first.")
+        print(e)
+        return
+
+    season_metrics.sort_values("time_GLS", inplace=True)
+    fig = plt.figure()
+    plt.barh(season_metrics["track"], season_metrics["time_GLS"], color='r')
+    plt.xlabel("% of lap grip limited")
+    plt.grid()
+
+    season_metrics.sort_values("time_PLS", inplace=True)
+    fig = plt.figure()
+    plt.barh(season_metrics["track"], season_metrics["time_PLS"], color='r')
+    plt.xlabel("% of lap power limited")
+    plt.grid()
+
+    season_metrics.sort_values("PBrake", inplace=True)
+    fig = plt.figure()
+    plt.barh(season_metrics["track"], season_metrics["PBrake"], color='r')
+    plt.xlabel("Average estimated brake power [kW]")
+    plt.grid()
+    plt.show()
+
+
+
+
+def compare_laps(lap_dict, channels=None):
+
+    try:
+        assert (len(lap_dict["track"]) ==
+                len(lap_dict["year"]) ==
+                len(lap_dict["session"]) ==
+                len(lap_dict["driver"]) ==
+                len(lap_dict["lap"]))
+
+        use_color = False
+        if "color" in lap_dict.keys():
+            assert (len(lap_dict["track"]) == len(lap_dict["color"]))
+            use_color = True
+
+        use_legend = False
+        if "legend_name" in lap_dict.keys():
+            assert (len(lap_dict["track"]) == len(lap_dict["legend_name"]))
+            use_legend = True
+
+    except AssertionError as e:
+        print("Sizes of dictionary entries don't match.")
+        print(e)
+        return
+
+
+    lap_data = []
+    for ii, driver in enumerate(lap_dict["driver"]):
+
+        session = ff1.get_session(lap_dict["year"][ii], lap_dict["track"][ii], lap_dict["session"][ii])
+        session.load()
+        laps = session.laps.pick_driver(driver)
+
+        if lap_dict["lap"][ii] == 0:
+            lap_df = laps.pick_fastest().get_telemetry()
+            lap_time = laps.pick_fastest().LapTime.total_seconds()
         else:
-            LapTimeList = laps_list[driver]['LapTime'].astype('timedelta64[ms]').astype(np.float64) / 1000
-            LapNumberList = laps_list[driver]['LapNumber']
-            LapTable = pd.DataFrame({'LapNumber': LapNumberList, 'LapTimeList': LapTimeList})
-            print(LapTable.to_string())
-            lapnum = input('Select lap number for ' + driver)
-            fastest[driver] = laps_list[driver][laps_list[driver]['LapNumber'] == int(lapnum)].pick_fastest()
-            telemetry[driver] = fastest[driver].get_telemetry()#.get_car_data().add_distance()#
-    telemetry[driver] = fastest[driver].get_telemetry()
-    telemetry[driver]['tLap'] = telemetry[driver]['Time']/np.timedelta64(1, 's')#.astype('timedelta64[ms]').astype(np.float64) / 1000
+            lap_df = laps.iloc[lap_dict["lap"][ii]].get_telemetry()
+            lap_time = laps.iloc[lap_dict["lap"][ii]].LapTime.total_seconds()
 
-# Get interpolated data so we can create TDiff channel
-sLapInterp = np.linspace( 0., telemetry[drivers[0]]['Distance'].iloc[-1], 1000 )
-sLapInterpDouble = np.linspace( 0., 2*telemetry[drivers[0]]['Distance'].iloc[-1], 2000 )
-vCar = dict()
-nGear = dict()
-tLapDouble = dict()
-tLap = dict()
-rThrottle = dict()
-GapToCarAhead = dict()
-GapToCarAheadDouble = dict()
-for driver in drivers:
+        lap_df['Time'] = lap_df['Time'].dt.total_seconds()
 
-    if driver == 'SAI':
-        telemetry[driver]['Distance'] += 10
-        telemetry[driver]['tLap'] += .158
-        vCar[driver] = np.interp( sLapInterp, telemetry[driver]['Distance'], telemetry[driver]['Speed'] )
-        tLap[driver] = np.interp( sLapInterp, telemetry[driver]['Distance'], telemetry[driver]['tLap'] )
-        #tLap[driver] = fastest[driver].LapTime.total_seconds()*tLap[driver]/tLap[driver][-1]
-        rThrottle[driver] = np.interp( sLapInterp, telemetry[driver]['Distance'], telemetry[driver]['Throttle'] )
-    else:
-        telemetry[driver]['Distance'] = sLapInterp[-1] * telemetry[driver]['Distance'] / telemetry[driver]['Distance'].iloc[-1]
-        vCar[driver] = np.interp(sLapInterp, telemetry[driver]['Distance'], telemetry[driver]['Speed'])
-        tLap[driver] = np.interp(sLapInterp, telemetry[driver]['Distance'], telemetry[driver]['tLap'])
-        tLap[driver] = fastest[driver].LapTime.total_seconds() * tLap[driver] / tLap[driver][-1]
-        rThrottle[driver] = np.interp(sLapInterp, telemetry[driver]['Distance'], telemetry[driver]['Throttle'])
-        nGear[driver] = np.interp(sLapInterp, telemetry[driver]['Distance'], telemetry[driver]['nGear'])
-    tLapDouble[driver] = tLap[driver]
-    tLapDouble[driver] = np.append(tLapDouble[driver], tLapDouble[driver] + tLapDouble[driver][-1] + 1e-3)
-    GapToCarAhead[driver] = np.interp( sLapInterp, telemetry[driver]['Distance'], telemetry[driver]['DistanceToDriverAhead'] )
+        if ii == 0:
+            lap_distance = lap_df["Distance"].iloc[-1]
+            sLapInterp = np.linspace(0., lap_df["Distance"].iloc[-1], 1000)
+            sLapInterpDouble = np.linspace(0., 2 * lap_df["Distance"].iloc[-1], 2000)
+            tLapRef = np.interp(sLapInterp, lap_df['Distance'], lap_df['Time'])
 
-    GapToCarAheadDouble[driver] = GapToCarAhead[driver]
-    GapToCarAheadDouble[driver] = np.append(GapToCarAhead[driver], GapToCarAheadDouble[driver])
-    dt = np.interp(sLapInterpDouble + GapToCarAheadDouble[driver], sLapInterpDouble, tLapDouble[driver]) - tLapDouble[driver]
+        lap_local = {"Distance": [],
+                     "Time_interp": [],
+                     "Speed": [],
+                     "Throttle": [],
+                     "DRS": [],
+                     "Distance_interp": [],
+                     "DistanceToDriverAhead": [],
+                     "GapToCarAhead": []}
 
-    GapToCarAhead[driver] = np.interp(sLapInterp, sLapInterpDouble, dt)
+        lap_local["Distance"] = np.array(lap_df["Distance"] * sLapInterp[-1] / lap_df["Distance"].iloc[-1])
+        lap_local["Time_interp"] = np.interp(sLapInterp, lap_local["Distance"], lap_df['Time'])
+        lap_local["Time_interp"] = lap_local["Time_interp"] * lap_time / lap_local["Time_interp"][-1]
+
+        lap_local["Speed"] = np.array(lap_df["Speed"])
+        lap_local["Throttle"] = np.array(lap_df["Throttle"])
+        lap_local["DRS"] = np.array(lap_df["DRS"])
+        lap_local["DRS"] = lap_local["DRS"] > 9
+        lap_local["DistanceToDriverAhead"] = np.array(lap_df["DistanceToDriverAhead"])
+        lap_local["Distance_interp"] = sLapInterp
 
 
+        tLapDouble = lap_local["Time_interp"]
+        tLapDouble = np.append(lap_local["Time_interp"], lap_local["Time_interp"] + lap_local["Time_interp"][-1] + 1e-3)
+        lap_local["GapToCarAhead"] = np.interp( sLapInterp, lap_local["Distance"], lap_local["DistanceToDriverAhead"] )
+
+        GapToCarAheadDouble = lap_local["GapToCarAhead"]
+        GapToCarAheadDouble = np.append(GapToCarAheadDouble, GapToCarAheadDouble)
+        dt = np.interp(sLapInterpDouble + GapToCarAheadDouble, sLapInterpDouble, tLapDouble) - tLapDouble
+
+        lap_local["GapToCarAhead"] = np.interp(sLapInterp, sLapInterpDouble, dt)
+
+        lap_data.append(lap_local)
 
 
-fig, ax = plt.subplots(4, sharex='all')
+    fig, ax = plt.subplots(4, sharex='all')
+    axDRS = ax[0].twinx()
+
+    for ii, driver in enumerate(lap_dict["driver"]):
+
+        if use_color:
+            color = lap_dict["color"][ii]
+        else:
+            color = fastf1.plotting.driver_color(driver)
+
+        if use_legend:
+            legend_name = lap_dict["legend_name"][ii]
+        else:
+            legend_name = driver
+
+        ax[0].plot(lap_data[ii]["Distance"], lap_data[ii]["Speed"], label=legend_name,
+                   color=color, linewidth=1)
+        axDRS.plot(lap_data[ii]["Distance"], lap_data[ii]["DRS"], label=legend_name,
+                   color=color, linewidth=1)
+    ax[0].set(ylabel='vCar [km/h]')
+    axDRS.set(ylabel='DRS [on/off]', ylim=(0,5))
+    ax[0].grid(linewidth=0.5)
+
+    for ii, driver in enumerate(lap_dict["driver"]):
+
+        if use_color:
+            color = lap_dict["color"][ii]
+        else:
+            color = fastf1.plotting.driver_color(driver)
+
+        if use_legend:
+            legend_name = lap_dict["legend_name"][ii]
+        else:
+            legend_name = driver
+
+        ax[1].plot(lap_data[ii]["Distance"], lap_data[ii]["Throttle"], label=legend_name,
+                   color=color, linewidth=1)
+    ax[1].set(ylabel='rPedalPos [%]')
+    ax[1].grid(linewidth=0.5)
+
+    for ii, driver in enumerate(lap_dict["driver"]):
+
+        if use_color:
+            color = lap_dict["color"][ii]
+        else:
+            color = fastf1.plotting.driver_color(driver)
+
+        if use_legend:
+            legend_name = lap_dict["legend_name"][ii]
+        else:
+            legend_name = driver
+
+        ax[2].plot(lap_data[ii]["Distance_interp"], lap_data[ii]["Time_interp"] - lap_data[0]["Time_interp"],
+                   label=legend_name, color=color, linewidth=1)
+    ax[2].set(ylabel='tDiff [s]')
+    ax[2].legend(loc="lower left")
+    ax[2].grid(linewidth=0.5)
+
+    for ii, driver in enumerate(lap_dict["driver"]):
+
+        if use_color:
+            color = lap_dict["color"][ii]
+        else:
+            color = fastf1.plotting.driver_color(driver)
+
+        if use_legend:
+            legend_name = lap_dict["legend_name"][ii]
+        else:
+            legend_name = driver
+
+        ax[3].plot(lap_data[ii]["Distance_interp"], lap_data[ii]["GapToCarAhead"], label=legend_name,
+                   color=color, linewidth=1)
+    ax[3].set(ylabel='Gap to car ahead [s]', xlabel='sLap [m]', ylim=(0, 10))
+    ax[3].grid(linewidth=0.5)
+
+    plt.show()
 
 
-for ii, driver in enumerate(drivers):
-    ax[0].plot(sLapInterp, vCar[driver], label=driver, color=colors[driver], linewidth=1, linestyle=linestyles[driver])
-ax[0].set(ylabel='vCar [km/h]')
-ax[0].grid(linewidth=0.5)
 
-for ii, driver in enumerate(drivers):
-    ax[1].plot(sLapInterp, rThrottle[driver], label=driver, color=colors[driver], linewidth=1, linestyle=linestyles[driver])
-ax[1].set(ylabel='rPedalPos [%]')
-ax[1].grid(linewidth=0.5)
+if __name__ == "__main__":
 
-for ii, driver in enumerate(drivers):
-    ax[2].plot(sLapInterp, tLap[driver] - tLap[drivers[0]], label=driver, color=colors[driver], linewidth=1, linestyle=linestyles[driver])
-ax[2].set(ylabel='TDiff [s]')
-ax[2].legend(loc="lower left")
-ax[2].grid(linewidth=0.5)
+    #plot_season_metrics()
+    compare_laps({"year": [2023, 2023],
+                  "track": ["Barcelona", "Barcelona"],
+                  "session": ['Qualifying', 'Qualifying'],
+                  "driver": ['GAS', 'HAM'],
+                  "lap": [0,0]})
 
-#for ii, driver in enumerate(drivers):
-#    ax[2].plot(sLapInterp, nGear[driver], label=driver, color=colors[driver], linewidth=1, linestyle=linestyles[driver])
-#ax[2].set(ylabel='nGear [-]')
-#ax[2].legend(loc="lower left")
-#ax[2].grid(linewidth=0.5)
-
-
-for ii, driver in enumerate(drivers):
-    ax[3].plot(sLapInterp, GapToCarAhead[driver], label=driver, color=colors[driver], linewidth=0.5, linestyle=linestyles[driver])
-ax[3].set(ylabel='Gap to car ahead [s]', xlabel='sLap [m]')
-ax[3].grid(linewidth=0.5)
-#ax[3].set_ylim(0, 5.0)
-
-
-#plt.suptitle('NOR - 77.218s | ALO - 81.452s', y=0.93)
-
-plt.show()

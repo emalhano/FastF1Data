@@ -1,3 +1,4 @@
 # Ignore folders
 /.idea/
 /venv/
+/Results/
